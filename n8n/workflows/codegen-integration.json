@@ -1,0 +1,438 @@
+{
+  "name": "Codegen Integration Hub",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 6
+            }
+          ]
+        }
+      },
+      "id": "sync-trigger",
+      "name": "Sync Every 6 Hours",
+      "type": "@n8n/n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1,
+      "position": [240, 300]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $env.CODEGEN_API_BASE_URL }}/api/status",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer {{ $env.CODEGEN_API_KEY }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "query-codegen-status",
+      "name": "Query Codegen Status",
+      "type": "@n8n/n8n-nodes-base.httpRequest",
+      "typeVersion": 1,
+      "position": [460, 180]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $env.CODEGEN_API_BASE_URL }}/api/recent-activity",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer {{ $env.CODEGEN_API_KEY }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "query-codegen-activity",
+      "name": "Query Codegen Recent Activity",
+      "type": "@n8n/n8n-nodes-base.httpRequest",
+      "typeVersion": 1,
+      "position": [460, 300]
+    },
+    {
+      "parameters": {
+        "operation": "SELECT so.*, pi.title, pi.stage FROM strategic_opportunities so JOIN para_items pi ON so.item_id = pi.id WHERE so.status = 'active' AND so.confidence_score >= 0.8 ORDER BY so.confidence_score DESC LIMIT 3"
+      },
+      "id": "query-high-priority-opportunities",
+      "name": "Query High Priority Opportunities",
+      "type": "@n8n/n8n-nodes-base.postgres",
+      "typeVersion": 1,
+      "position": [460, 420],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-credential-id",
+          "name": "PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "functionCode": "// Analyze Codegen activity and PARA opportunities for delegation\n\nconst codegenStatus = $input.all()[0]?.json || {};\nconst codegenActivity = $input.all()[1]?.json || [];\nconst paraOpportunities = $input.all()[2]?.json || [];\n\n// Determine if Codegen is available for delegation\nconst codegenAvailable = codegenStatus.status === 'active' && \n                        codegenActivity.length < 5; // Not overloaded\n\n// Identify opportunities that would benefit from Codegen\ndelegation\nconst delegationCandidates = paraOpportunities.filter(opp => \n  opp.opportunity_type === 'building_block' || \n  opp.opportunity_type === 'high_impact' ||\n  (opp.description && (\n    opp.description.toLowerCase().includes('code') ||\n    opp.description.toLowerCase().includes('automation') ||\n    opp.description.toLowerCase().includes('integration')\n  ))\n);\n\n// Prepare delegation requests\nconst delegationRequests = delegationCandidates.map(opp => ({\n  opportunity_id: opp.id,\n  item_title: opp.title,\n  opportunity_type: opp.opportunity_type,\n  description: opp.description,\n  confidence: opp.confidence_score,\n  request_type: 'analysis',\n  priority: opp.confidence_score >= 0.9 ? 'high' : 'medium',\n  context: {\n    stage: opp.stage,\n    affected_areas: opp.affected_areas,\n    potential_impact: opp.potential_impact\n  }\n}));\n\nreturn {\n  codegen_available: codegenAvailable,\n  delegation_candidates: delegationCandidates.length,\n  delegation_requests: delegationRequests,\n  codegen_status: codegenStatus,\n  sync_timestamp: new Date().toISOString()\n};"
+      },
+      "id": "analyze-delegation",
+      "name": "Analyze Delegation Opportunities",
+      "type": "@n8n/n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [680, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.CODEGEN_API_BASE_URL }}/api/delegate-task",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer {{ $env.CODEGEN_API_KEY }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "task",
+              "value": "={{ $json.description }}"
+            },
+            {
+              "name": "context",
+              "value": "={{ JSON.stringify($json.context) }}"
+            },
+            {
+              "name": "priority",
+              "value": "={{ $json.priority }}"
+            },
+            {
+              "name": "source",
+              "value": "PARA Agent"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "delegate-to-codegen",
+      "name": "Delegate to Codegen",
+      "type": "@n8n/n8n-nodes-base.httpRequest",
+      "typeVersion": 1,
+      "position": [900, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json.codegen_available }}",
+              "operation": "true"
+            }
+          ]
+        }
+      },
+      "id": "filter-codegen-available",
+      "name": "Filter Codegen Available",
+      "type": "@n8n/n8n-nodes-base.filter",
+      "typeVersion": 1,
+      "position": [720, 300]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Update PARA database with delegation status\nconst delegationResults = $input.all();\n\n// Mark opportunities as delegated\nif (delegationResults.length > 0) {\n  return delegationResults.map(result => ({\n    opportunity_id: result.json?.delegation_id,\n    status: 'delegated',\n    delegated_to: 'codegen',\n    delegated_at: new Date().toISOString()\n  }));\n}\n\nreturn [];"
+      },
+      "id": "process-delegation-results",
+      "name": "Process Delegation Results",
+      "type": "@n8n/n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [1120, 300]
+    },
+    {
+      "parameters": {
+        "operation": "UPDATE strategic_opportunities SET status = 'delegated' WHERE id = $1",
+        "queryParameters": "={{ [$json.opportunity_id] }}"
+      },
+      "id": "update-opportunity-status",
+      "name": "Update Opportunity Status",
+      "type": "@n8n/n8n-nodes-base.postgres",
+      "typeVersion": 1,
+      "position": [1340, 300],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-credential-id",
+          "name": "PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.CODEGEN_API_BASE_URL }}/api/sync-para-status",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer {{ $env.CODEGEN_API_KEY }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "funnel_summary",
+              "value": "={{ $json.funnel_summary }}"
+            },
+            {
+              "name": "active_opportunities",
+              "value": "={{ $json.active_opportunities }}"
+            },
+            {
+              "name": "high_priority_items",
+              "value": "={{ $json.high_priority_items }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "sync-para-status",
+      "name": "Sync PARA Status to Codegen",
+      "type": "@n8n/n8n-nodes-base.httpRequest",
+      "typeVersion": 1,
+      "position": [680, 540]
+    },
+    {
+      "parameters": {
+        "operation": "SELECT COUNT(*) as total_items, stage, COUNT(*) as stage_count FROM para_items GROUP BY stage"
+      },
+      "id": "query-funnel-summary",
+      "name": "Query Funnel Summary",
+      "type": "@n8n/n8n-nodes-base.postgres",
+      "typeVersion": 1,
+      "position": [460, 540],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-credential-id",
+          "name": "PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "functionCode": "// Prepare comprehensive PARA status for Codegen\nconst funnelData = $input.all()[0]?.json || [];\nconst opportunities = $input.all()[1]?.json || [];\nconst highPriority = $input.all()[2]?.json || [];\n\n// Format funnel summary\nconst funnelSummary = funnelData.reduce((acc, row) => {\n  acc[row.stage] = parseInt(row.stage_count);\n  acc.total = (acc.total || 0) + parseInt(row.stage_count);\n  return acc;\n}, {});\n\n// Format opportunities\nconst activeOpportunities = opportunities.map(o => ({\n  title: o.title,\n  type: o.opportunity_type,\n  confidence: o.confidence_score,\n  impact: o.potential_impact\n}));\n\n// Format high priority items\nconst highPriorityItems = highPriority.map(item => ({\n  title: item.title,\n  score: item.score,\n  color: item.color_code,\n  stage: item.stage\n}));\n\nreturn {\n  funnel_summary: funnelSummary,\n  active_opportunities: activeOpportunities,\n  high_priority_items: highPriorityItems,\n  sync_timestamp: new Date().toISOString()\n};"
+      },
+      "id": "prepare-para-status",
+      "name": "Prepare PARA Status",
+      "type": "@n8n/n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [520, 540]
+    },
+    {
+      "parameters": {
+        "channel": "C1234567890",
+        "text": "🤖 *CODEGEN INTEGRATION UPDATE* 🤖\n\n*Status:* {{ $json.codegen_available ? 'Available' : 'Busy' }}\n*Delegation Candidates:* {{ $json.delegation_candidates }}\n*Tasks Delegated:* {{ $input.all().length }}\n\n_Codegen is now aware of your PARA system status and high-priority opportunities._",
+        "attachments": []
+      },
+      "id": "slack-codegen-update",
+      "name": "Slack Codegen Update",
+      "type": "@n8n/n8n-nodes-base.slack",
+      "typeVersion": 1,
+      "position": [1560, 300],
+      "credentials": {
+        "slackApi": {
+          "id": "slack-credential-id",
+          "name": "Slack API"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Sync Every 6 Hours": {
+      "main": [
+        [
+          {
+            "node": "Query Codegen Status",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Query Codegen Recent Activity",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Query High Priority Opportunities",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Query Funnel Summary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Query Codegen Status": {
+      "main": [
+        [
+          {
+            "node": "Analyze Delegation Opportunities",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Query Codegen Recent Activity": {
+      "main": [
+        [
+          {
+            "node": "Analyze Delegation Opportunities",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Query High Priority Opportunities": {
+      "main": [
+        [
+          {
+            "node": "Analyze Delegation Opportunities",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Prepare PARA Status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Query Funnel Summary": {
+      "main": [
+        [
+          {
+            "node": "Prepare PARA Status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Analyze Delegation Opportunities": {
+      "main": [
+        [
+          {
+            "node": "Filter Codegen Available",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Filter Codegen Available": {
+      "main": [
+        [
+          {
+            "node": "Delegate to Codegen",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Delegate to Codegen": {
+      "main": [
+        [
+          {
+            "node": "Process Delegation Results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Process Delegation Results": {
+      "main": [
+        [
+          {
+            "node": "Update Opportunity Status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare PARA Status": {
+      "main": [
+        [
+          {
+            "node": "Sync PARA Status to Codegen",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update Opportunity Status": {
+      "main": [
+        [
+          {
+            "node": "Slack Codegen Update",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Sync PARA Status to Codegen": {
+      "main": [
+        [
+          {
+            "node": "Slack Codegen Update",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "meta": {
+    "templateCredsSetupCompleted": false
+  },
+  "pinData": {},
+  "versionId": "1"
+}
+

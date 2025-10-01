@@ -1,0 +1,184 @@
+{
+  "name": "PARA Task Score Calculator",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 1
+            }
+          ]
+        }
+      },
+      "id": "schedule-trigger",
+      "name": "Schedule Trigger",
+      "type": "@n8n/n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1,
+      "position": [240, 300]
+    },
+    {
+      "parameters": {
+        "operation": "SELECT id, title, content, stage, urgency, importance, due_date, estimated_duration, blocks_others, affected_areas, last_opened, created_at FROM para_items WHERE stage IN ('jots', 'tasks', 'projects') AND (last_score_update IS NULL OR last_score_update < NOW() - INTERVAL '1 hour')"
+      },
+      "id": "query-items",
+      "name": "Query Unscored Items",
+      "type": "@n8n/n8n-nodes-base.postgres",
+      "typeVersion": 1,
+      "position": [460, 300],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-credential-id",
+          "name": "PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "functionCode": "// Calculate Amplenote-style Task Score (0-20 scale)\n// Based on user's spiritual productivity philosophy\n\nfunction calculateTaskScore(item) {\n  let score = 0;\n  \n  // Note activity: +1 per day for frequently opened notes (max 7)\n  if (item.last_opened) {\n    const daysSinceOpened = Math.floor((Date.now() - new Date(item.last_opened).getTime()) / (1000 * 60 * 60 * 24));\n    score += Math.min(Math.max(0, 7 - daysSinceOpened), 7);\n  }\n  \n  // Urgency/Importance: +5 for urgent, +3 for important\n  if (item.urgency === 'urgent') score += 5;\n  if (item.importance === 'high') score += 3;\n  \n  // Deadlines: +10 if due today/overdue, +5 if due within 3 days\n  if (item.due_date) {\n    const dueDate = new Date(item.due_date);\n    const daysUntilDue = Math.ceil((dueDate.getTime() - Date.now()) / (1000 * 60 * 60 * 24));\n    if (daysUntilDue <= 0) score += 10;\n    else if (daysUntilDue <= 3) score += 5;\n  }\n  \n  // Duration & blocking: +3 for quick wins (≤30 min), +2 for blockers\n  if (item.estimated_duration && item.estimated_duration <= 30) score += 3;\n  if (item.blocks_others) score += 2;\n  \n  // Cross-area impact: +2 per area affected\n  if (item.affected_areas) {\n    const areas = Array.isArray(item.affected_areas) ? item.affected_areas : \n                  (typeof item.affected_areas === 'string' ? item.affected_areas.split(',') : []);\n    score += areas.length * 2;\n  }\n  \n  return Math.min(score, 20); // Cap at 20\n}\n\n// Color coding based on score\nfunction getTaskColor(score) {\n  if (score >= 10) return 'red';\n  if (score >= 5) return 'gold';\n  return 'normal';\n}\n\n// Process each item\nconst results = [];\nfor (const item of $input.all()) {\n  const score = calculateTaskScore(item);\n  const color = getTaskColor(score);\n  \n  results.push({\n    ...item,\n    task_score: score,\n    color_code: color,\n    scored_at: new Date().toISOString(),\n    score_breakdown: {\n      activity: item.last_opened ? Math.min(Math.max(0, 7 - Math.floor((Date.now() - new Date(item.last_opened).getTime()) / (1000 * 60 * 60 * 24))), 7) : 0,\n      urgency: item.urgency === 'urgent' ? 5 : 0,\n      importance: item.importance === 'high' ? 3 : 0,\n      deadline: item.due_date ? (Math.ceil((new Date(item.due_date).getTime() - Date.now()) / (1000 * 60 * 60 * 24)) <= 0 ? 10 : \n                Math.ceil((new Date(item.due_date).getTime() - Date.now()) / (1000 * 60 * 60 * 24)) <= 3 ? 5 : 0) : 0,\n      quick_win: (item.estimated_duration && item.estimated_duration <= 30) ? 3 : 0,\n      blocker: item.blocks_others ? 2 : 0,\n      cross_impact: item.affected_areas ? \n        (Array.isArray(item.affected_areas) ? item.affected_areas.length : \n         (typeof item.affected_areas === 'string' ? item.affected_areas.split(',').length : 0)) * 2 : 0\n    }\n  });\n}\n\nreturn results;"
+      },
+      "id": "calculate-scores",
+      "name": "Calculate Task Scores",
+      "type": "@n8n/n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [680, 300]
+    },
+    {
+      "parameters": {
+        "operation": "INSERT INTO task_scores (item_id, score, color_code, score_breakdown, created_at) VALUES ($1, $2, $3, $4, $5) ON CONFLICT (item_id) DO UPDATE SET score = EXCLUDED.score, color_code = EXCLUDED.color_code, score_breakdown = EXCLUDED.score_breakdown, created_at = EXCLUDED.created_at",
+        "queryParameters": "={{ [\n  $json.id,\n  $json.task_score,\n  $json.color_code,\n  JSON.stringify($json.score_breakdown),\n  $json.scored_at\n] }}"
+      },
+      "id": "store-scores",
+      "name": "Store Task Scores",
+      "type": "@n8n/n8n-nodes-base.postgres",
+      "typeVersion": 1,
+      "position": [900, 300],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-credential-id",
+          "name": "PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "UPDATE para_items SET last_score_update = $1 WHERE id = $2",
+        "queryParameters": "={{ [$json.scored_at, $json.id] }}"
+      },
+      "id": "update-items",
+      "name": "Update Items Timestamp",
+      "type": "@n8n/n8n-nodes-base.postgres",
+      "typeVersion": 1,
+      "position": [1120, 300],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-credential-id",
+          "name": "PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "number": [
+            {
+              "value1": "={{ $json.task_score }}",
+              "operation": "greaterEqual",
+              "value2": 10
+            }
+          ]
+        }
+      },
+      "id": "filter-high-priority",
+      "name": "Filter High Priority (Red)",
+      "type": "@n8n/n8n-nodes-base.filter",
+      "typeVersion": 1,
+      "position": [900, 120]
+    },
+    {
+      "parameters": {
+        "channel": "C1234567890",
+        "text": "🚨 *HIGH PRIORITY TASK* 🚨\n*{{ $json.title }}*\nScore: {{ $json.task_score }} ({{ $json.color_code }})\nStage: {{ $json.stage }}\n{{ $json.due_date ? `Due: ${new Date($json.due_date).toLocaleDateString()}` : '' }}\n\n_This task demands immediate attention!_",
+        "attachments": []
+      },
+      "id": "slack-notification",
+      "name": "Slack High Priority Alert",
+      "type": "@n8n/n8n-nodes-base.slack",
+      "typeVersion": 1,
+      "position": [1120, 120],
+      "credentials": {
+        "slackApi": {
+          "id": "slack-credential-id",
+          "name": "Slack API"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Schedule Trigger": {
+      "main": [
+        [
+          {
+            "node": "Query Unscored Items",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Query Unscored Items": {
+      "main": [
+        [
+          {
+            "node": "Calculate Task Scores",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Calculate Task Scores": {
+      "main": [
+        [
+          {
+            "node": "Store Task Scores",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Filter High Priority (Red)",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Update Items Timestamp",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Filter High Priority (Red)": {
+      "main": [
+        [
+          {
+            "node": "Slack High Priority Alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "meta": {
+    "templateCredsSetupCompleted": false
+  },
+  "pinData": {},
+  "versionId": "1"
+}
+

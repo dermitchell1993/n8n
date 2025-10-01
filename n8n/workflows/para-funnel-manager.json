@@ -1,0 +1,267 @@
+{
+  "name": "PARA Funnel Manager",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 1
+            }
+          ]
+        }
+      },
+      "id": "schedule-trigger",
+      "name": "Hourly Check",
+      "type": "@n8n/n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1,
+      "position": [240, 300]
+    },
+    {
+      "parameters": {
+        "operation": "SELECT pi.*, ts.score, ts.color_code FROM para_items pi LEFT JOIN task_scores ts ON pi.id = ts.item_id WHERE pi.stage IN ('jots', 'tasks', 'projects') AND (pi.updated_at > NOW() - INTERVAL '1 hour' OR pi.last_score_update > NOW() - INTERVAL '1 hour')"
+      },
+      "id": "query-updated-items",
+      "name": "Query Updated Items",
+      "type": "@n8n/n8n-nodes-base.postgres",
+      "typeVersion": 1,
+      "position": [460, 300],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-credential-id",
+          "name": "PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "functionCode": "// Determine stage transitions based on PARA methodology\n// Jots → Tasks → Projects → Areas/Resources → Archives\n\nfunction shouldTransitionStage(item) {\n  const { stage, score, color_code, updated_at, created_at } = item;\n  const ageInDays = (Date.now() - new Date(created_at).getTime()) / (1000 * 60 * 60 * 24);\n  const lastUpdatedDays = (Date.now() - new Date(updated_at).getTime()) / (1000 * 60 * 60 * 24);\n  \n  let newStage = stage;\n  let reason = '';\n  \n  switch (stage) {\n    case 'jots':\n      // Jots become tasks when they have enough detail or high priority\n      if ((score >= 5 && color_code === 'gold') || \n          ageInDays > 7 || \n          (item.title && item.title.length > 20) ||\n          item.due_date) {\n        newStage = 'tasks';\n        reason = 'Jot matured into actionable task';\n      }\n      break;\n      \n    case 'tasks':\n      // Tasks become projects when they have dependencies or scope\n      if (score >= 8 || \n          ageInDays > 14 || \n          item.blocks_others || \n          (item.affected_areas && item.affected_areas.length > 1)) {\n        newStage = 'projects';\n        reason = 'Task evolved into project with dependencies';\n      }\n      break;\n      \n    case 'projects':\n      // Projects move to areas/resources when completed or stable\n      if (lastUpdatedDays > 30 || \n          (item.content && item.content.toLowerCase().includes('complete'))) {\n        // Check if it's more of an area (ongoing) or resource (reference)\n        const isArea = item.title.toLowerCase().includes('system') || \n                      item.title.toLowerCase().includes('process') || \n                      item.title.toLowerCase().includes('maintenance');\n        newStage = isArea ? 'areas' : 'resources';\n        reason = `Project completed, moved to ${newStage}`;\n      }\n      break;\n      \n    case 'areas':\n    case 'resources':\n      // Move to archives after 6 months of inactivity\n      if (lastUpdatedDays > 180) {\n        newStage = 'archives';\n        reason = 'Archived due to inactivity';\n      }\n      break;\n  }\n  \n  return newStage !== stage ? { newStage, reason } : null;\n}\n\n// Process items and identify transitions\nconst transitions = [];\n$input.all().forEach(item => {\n  const transition = shouldTransitionStage(item);\n  if (transition) {\n    transitions.push({\n      ...item,\n      ...transition,\n      transition_timestamp: new Date().toISOString()\n    });\n  }\n});\n\nreturn transitions;"
+      },
+      "id": "analyze-transitions",
+      "name": "Analyze Stage Transitions",
+      "type": "@n8n/n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [680, 300]
+    },
+    {
+      "parameters": {
+        "operation": "UPDATE para_items SET stage = $1, updated_at = NOW() WHERE id = $2",
+        "queryParameters": "={{ [$json.newStage, $json.id] }}"
+      },
+      "id": "update-stage",
+      "name": "Update Item Stage",
+      "type": "@n8n/n8n-nodes-base.postgres",
+      "typeVersion": 1,
+      "position": [900, 300],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-credential-id",
+          "name": "PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "INSERT INTO funnel_movements (item_id, from_stage, to_stage, movement_reason, moved_by, moved_at) VALUES ($1, $2, $3, $4, 'auto', NOW())",
+        "queryParameters": "={{ [$json.id, $json.stage, $json.newStage, $json.reason] }}"
+      },
+      "id": "log-movement",
+      "name": "Log Funnel Movement",
+      "type": "@n8n/n8n-nodes-base.postgres",
+      "typeVersion": 1,
+      "position": [1120, 300],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-credential-id",
+          "name": "PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{ $json.source }}",
+              "operation": "equals",
+              "value2": "notion"
+            }
+          ]
+        }
+      },
+      "id": "filter-notion-items",
+      "name": "Filter Notion Items",
+      "type": "@n8n/n8n-nodes-base.filter",
+      "typeVersion": 1,
+      "position": [900, 120]
+    },
+    {
+      "parameters": {
+        "resource": "databasePage",
+        "operation": "update",
+        "pageId": "={{ $json.external_id }}",
+        "properties": {
+          "Stage": {
+            "select": {
+              "name": "={{ $json.newStage.charAt(0).toUpperCase() + $json.newStage.slice(1) }}"
+            }
+          }
+        }
+      },
+      "id": "update-notion-page",
+      "name": "Update Notion Page",
+      "type": "@n8n/n8n-nodes-base.notion",
+      "typeVersion": 2.2,
+      "position": [1120, 120],
+      "credentials": {
+        "notionApi": {
+          "id": "notion-credential-id",
+          "name": "Notion API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{ $json.source }}",
+              "operation": "equals",
+              "value2": "linear"
+            }
+          ]
+        }
+      },
+      "id": "filter-linear-items",
+      "name": "Filter Linear Items",
+      "type": "@n8n/n8n-nodes-base.filter",
+      "typeVersion": 1,
+      "position": [900, 480]
+    },
+    {
+      "parameters": {
+        "resource": "issue",
+        "operation": "update",
+        "issueId": "={{ $json.external_id }}",
+        "updateFields": {
+          "stateId": "={{ getLinearStateIdForStage($json.newStage) }}"
+        }
+      },
+      "id": "update-linear-issue",
+      "name": "Update Linear Issue",
+      "type": "@n8n/n8n-nodes-base.linear",
+      "typeVersion": 1,
+      "position": [1120, 480],
+      "credentials": {
+        "linearApi": {
+          "id": "linear-credential-id",
+          "name": "Linear API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "functionCode": "// Helper function to map PARA stages to Linear states\n// This would need to be customized based on your Linear workspace\nfunction getLinearStateIdForStage(stage) {\n  const stageMapping = {\n    'jots': process.env.LINEAR_BACKLOG_STATE_ID,\n    'tasks': process.env.LINEAR_TODO_STATE_ID,\n    'projects': process.env.LINEAR_IN_PROGRESS_STATE_ID,\n    'areas': process.env.LINEAR_REVIEW_STATE_ID,\n    'resources': process.env.LINEAR_REVIEW_STATE_ID,\n    'archives': process.env.LINEAR_DONE_STATE_ID\n  };\n  return stageMapping[stage] || stageMapping['tasks'];\n}\n\n// This function is called by the Linear node\nreturn getLinearStateIdForStage($json.newStage);"
+      },
+      "id": "linear-state-helper",
+      "name": "Linear State Helper",
+      "type": "@n8n/n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [1120, 360]
+    }
+  ],
+  "connections": {
+    "Hourly Check": {
+      "main": [
+        [
+          {
+            "node": "Query Updated Items",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Query Updated Items": {
+      "main": [
+        [
+          {
+            "node": "Analyze Stage Transitions",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Analyze Stage Transitions": {
+      "main": [
+        [
+          {
+            "node": "Update Item Stage",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Log Funnel Movement",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Filter Notion Items",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Filter Linear Items",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Filter Notion Items": {
+      "main": [
+        [
+          {
+            "node": "Update Notion Page",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Filter Linear Items": {
+      "main": [
+        [
+          {
+            "node": "Linear State Helper",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Linear State Helper": {
+      "main": [
+        [
+          {
+            "node": "Update Linear Issue",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "meta": {
+    "templateCredsSetupCompleted": false
+  },
+  "pinData": {},
+  "versionId": "1"
+}
+

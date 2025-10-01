@@ -1,0 +1,261 @@
+{
+  "name": "PARA Data Ingestion Hub",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 15
+            }
+          ]
+        }
+      },
+      "id": "schedule-trigger",
+      "name": "Every 15 Minutes",
+      "type": "@n8n/n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1,
+      "position": [240, 300]
+    },
+    {
+      "parameters": {
+        "resource": "databasePage",
+        "operation": "search",
+        "databaseId": "={{ $env.NOTION_JOTS_DATABASE_ID }}",
+        "returnAll": true,
+        "options": {
+          "sort": {
+            "sortValue": "last_edited_time",
+            "sortOrder": "descending"
+          }
+        }
+      },
+      "id": "query-notion-jots",
+      "name": "Query Notion Jots",
+      "type": "@n8n/n8n-nodes-base.notion",
+      "typeVersion": 2.2,
+      "position": [460, 180],
+      "credentials": {
+        "notionApi": {
+          "id": "notion-credential-id",
+          "name": "Notion API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "resource": "databasePage",
+        "operation": "search",
+        "databaseId": "={{ $env.NOTION_TASKS_DATABASE_ID }}",
+        "returnAll": true,
+        "options": {
+          "sort": {
+            "sortValue": "last_edited_time",
+            "sortOrder": "descending"
+          }
+        }
+      },
+      "id": "query-notion-tasks",
+      "name": "Query Notion Tasks",
+      "type": "@n8n/n8n-nodes-base.notion",
+      "typeVersion": 2.2,
+      "position": [460, 300],
+      "credentials": {
+        "notionApi": {
+          "id": "notion-credential-id",
+          "name": "Notion API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "resource": "databasePage",
+        "operation": "search",
+        "databaseId": "={{ $env.NOTION_PROJECTS_DATABASE_ID }}",
+        "returnAll": true,
+        "options": {
+          "sort": {
+            "sortValue": "last_edited_time",
+            "sortOrder": "descending"
+          }
+        }
+      },
+      "id": "query-notion-projects",
+      "name": "Query Notion Projects",
+      "type": "@n8n/n8n-nodes-base.notion",
+      "typeVersion": 2.2,
+      "position": [460, 420],
+      "credentials": {
+        "notionApi": {
+          "id": "notion-credential-id",
+          "name": "Notion API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "resource": "issue",
+        "operation": "getAll",
+        "teamId": "={{ $env.LINEAR_TEAM_ID }}",
+        "returnAll": true,
+        "options": {
+          "includeComments": false,
+          "includeSubIssues": true
+        }
+      },
+      "id": "query-linear-issues",
+      "name": "Query Linear Issues",
+      "type": "@n8n/n8n-nodes-base.linear",
+      "typeVersion": 1,
+      "position": [460, 540],
+      "credentials": {
+        "linearApi": {
+          "id": "linear-credential-id",
+          "name": "Linear API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "functionCode": "// Merge and deduplicate items from Notion and Linear\n// Transform to standardized PARA format\n\nconst allItems = [];\nconst seenIds = new Set();\n\n// Process Notion items\nfunction processNotionItem(item, stage) {\n  const id = `notion_${item.id}`;\n  if (seenIds.has(id)) return null;\n  \n  seenIds.add(id);\n  \n  // Extract properties from Notion page\n  const properties = item.properties || {};\n  \n  return {\n    external_id: item.id,\n    source: 'notion',\n    title: properties.Name?.title?.[0]?.plain_text || item.title || 'Untitled',\n    content: item.content || '',\n    stage: stage,\n    urgency: properties.Urgency?.select?.name?.toLowerCase() || 'medium',\n    importance: properties.Importance?.select?.name?.toLowerCase() || 'medium',\n    due_date: properties['Due Date']?.date?.start || null,\n    estimated_duration: properties['Estimated Duration']?.number || null,\n    blocks_others: properties['Blocks Others']?.checkbox || false,\n    affected_areas: properties['Affected Areas']?.multi_select?.map(s => s.name) || [],\n    tags: properties.Tags?.multi_select?.map(s => s.name) || [],\n    last_opened: item.last_edited_time,\n    notion_database_id: item.database_id,\n    metadata: {\n      notion_url: item.url,\n      created_time: item.created_time,\n      last_edited_time: item.last_edited_time\n    }\n  };\n}\n\n// Process Linear items\nfunction processLinearItem(item) {\n  const id = `linear_${item.id}`;\n  if (seenIds.has(id)) return null;\n  \n  seenIds.add(id);\n  \n  // Map Linear state to PARA stage\n  let stage = 'tasks'; // default\n  const stateName = item.state?.name?.toLowerCase() || '';\n  if (stateName.includes('backlog') || stateName.includes('todo')) stage = 'jots';\n  else if (stateName.includes('in progress') || stateName.includes('started')) stage = 'tasks';\n  else if (stateName.includes('done') || stateName.includes('completed')) stage = 'archives';\n  \n  // Map priority to urgency/importance\n  let urgency = 'medium';\n  let importance = 'medium';\n  const priority = item.priority || 0;\n  if (priority >= 3) {\n    urgency = 'urgent';\n    importance = 'high';\n  } else if (priority >= 2) {\n    importance = 'high';\n  }\n  \n  return {\n    external_id: item.id,\n    source: 'linear',\n    title: item.title,\n    content: item.description || '',\n    stage: stage,\n    urgency: urgency,\n    importance: importance,\n    due_date: item.dueDate || null,\n    estimated_duration: null, // Linear doesn't have this\n    blocks_others: false, // Default\n    affected_areas: [],\n    tags: item.labels?.map(l => l.name) || [],\n    last_opened: item.updatedAt,\n    linear_project_id: item.project?.id || null,\n    metadata: {\n      linear_url: item.url,\n      state: item.state?.name,\n      priority: item.priority,\n      assignee: item.assignee?.name,\n      created_at: item.createdAt,\n      updated_at: item.updatedAt\n    }\n  };\n}\n\n// Process all inputs\n$input.all().forEach(input => {\n  if (input.json && Array.isArray(input.json.results)) {\n    // Notion response\n    const stage = input.json.database_name?.toLowerCase().includes('jot') ? 'jots' :\n                  input.json.database_name?.toLowerCase().includes('task') ? 'tasks' :\n                  input.json.database_name?.toLowerCase().includes('project') ? 'projects' : 'tasks';\n    \n    input.json.results.forEach(item => {\n      const processed = processNotionItem(item, stage);\n      if (processed) allItems.push(processed);\n    });\n  } else if (input.json && Array.isArray(input.json)) {\n    // Linear response\n    input.json.forEach(item => {\n      const processed = processLinearItem(item);\n      if (processed) allItems.push(processed);\n    });\n  }\n});\n\nreturn allItems;"
+      },
+      "id": "merge-deduplicate",
+      "name": "Merge & Deduplicate",
+      "type": "@n8n/n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [680, 300]
+    },
+    {
+      "parameters": {
+        "operation": "INSERT INTO para_items (external_id, source, title, content, stage, urgency, importance, due_date, estimated_duration, blocks_others, affected_areas, tags, last_opened, notion_database_id, linear_project_id, metadata, updated_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, NOW()) ON CONFLICT (external_id) DO UPDATE SET title = EXCLUDED.title, content = EXCLUDED.content, stage = EXCLUDED.stage, urgency = EXCLUDED.urgency, importance = EXCLUDED.importance, due_date = EXCLUDED.due_date, estimated_duration = EXCLUDED.estimated_duration, blocks_others = EXCLUDED.blocks_others, affected_areas = EXCLUDED.affected_areas, tags = EXCLUDED.tags, last_opened = EXCLUDED.last_opened, metadata = EXCLUDED.metadata, updated_at = NOW()",
+        "queryParameters": "={{ [\n  $json.external_id,\n  $json.source,\n  $json.title,\n  $json.content,\n  $json.stage,\n  $json.urgency,\n  $json.importance,\n  $json.due_date,\n  $json.estimated_duration,\n  $json.blocks_others,\n  $json.affected_areas,\n  $json.tags,\n  $json.last_opened,\n  $json.notion_database_id,\n  $json.linear_project_id,\n  JSON.stringify($json.metadata)\n] }}"
+      },
+      "id": "store-items",
+      "name": "Store in Database",
+      "type": "@n8n/n8n-nodes-base.postgres",
+      "typeVersion": 1,
+      "position": [900, 300],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-credential-id",
+          "name": "PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "functionCode": "// Log ingestion summary\nconsole.log(`Ingested ${$input.all().length} items from Notion and Linear`);\n\nreturn {\n  ingested_count: $input.all().length,\n  timestamp: new Date().toISOString(),\n  sources: ['notion', 'linear'],\n  stages_processed: ['jots', 'tasks', 'projects']\n};"
+      },
+      "id": "log-summary",
+      "name": "Log Summary",
+      "type": "@n8n/n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [1120, 300]
+    }
+  ],
+  "connections": {
+    "Every 15 Minutes": {
+      "main": [
+        [
+          {
+            "node": "Query Notion Jots",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Query Notion Tasks",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Query Notion Projects",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Query Linear Issues",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Query Notion Jots": {
+      "main": [
+        [
+          {
+            "node": "Merge & Deduplicate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Query Notion Tasks": {
+      "main": [
+        [
+          {
+            "node": "Merge & Deduplicate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Query Notion Projects": {
+      "main": [
+        [
+          {
+            "node": "Merge & Deduplicate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Query Linear Issues": {
+      "main": [
+        [
+          {
+            "node": "Merge & Deduplicate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge & Deduplicate": {
+      "main": [
+        [
+          {
+            "node": "Store in Database",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Store in Database": {
+      "main": [
+        [
+          {
+            "node": "Log Summary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "meta": {
+    "templateCredsSetupCompleted": false
+  },
+  "pinData": {},
+  "versionId": "1"
+}
+

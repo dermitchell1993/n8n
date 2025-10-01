@@ -1,0 +1,272 @@
+{
+  "name": "Strategic Opportunity Scout",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 24
+            }
+          ]
+        }
+      },
+      "id": "daily-trigger",
+      "name": "Daily Analysis",
+      "type": "@n8n/n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1,
+      "position": [240, 300]
+    },
+    {
+      "parameters": {
+        "operation": "SELECT pi.*, ts.score, ts.color_code FROM para_items pi JOIN task_scores ts ON pi.id = ts.item_id WHERE pi.stage IN ('projects', 'areas', 'resources') AND pi.updated_at > NOW() - INTERVAL '7 days'"
+      },
+      "id": "query-recent-projects",
+      "name": "Query Recent Projects",
+      "type": "@n8n/n8n-nodes-base.postgres",
+      "typeVersion": 1,
+      "position": [460, 300],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-credential-id",
+          "name": "PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "model": "llama3.2:latest",
+        "messages": [
+          {
+            "role": "system",
+            "content": "You are a strategic productivity analyst with deep knowledge of PARA methodology and Amplenote's Task Score philosophy. Your role is to identify strategic opportunities in a knowledge work system.\n\nAnalyze projects and identify:\n1. BUILDING BLOCKS: Incomplete projects that could serve as foundations for other areas\n2. HIGH IMPACT: Projects with significant cross-area dependencies or leverage potential\n3. NEAR COMPLETION: Projects close to finishing that would unlock other initiatives\n4. NEEDS TRIAGE: Items requiring human attention for strategic decisions\n\nFor each opportunity, provide:\n- Opportunity type\n- Confidence score (0.0-1.0)\n- Description of potential impact\n- Affected areas\n- Recommended actions\n\nFocus on execution over endless planning - surface what matters most for maximum productivity impact."
+          },
+          {
+            "role": "user",
+            "content": "Analyze these PARA projects and identify strategic opportunities:\n\n{{ $json.projects_text }}\n\nReturn a JSON array of opportunities with this structure:\n[\n  {\n    \"type\": \"building_block|high_impact|near_completion|needs_triage\",\n    \"confidence\": 0.85,\n    \"description\": \"Clear description of the opportunity\",\n    \"impact\": \"Potential impact if acted upon\",\n    \"affected_areas\": [\"area1\", \"area2\"],\n    \"actions\": [\"Specific recommended actions\"],\n    \"item_id\": 123\n  }\n]"
+          }
+        ],
+        "options": {}
+      },
+      "id": "analyze-opportunities",
+      "name": "AI Opportunity Analysis",
+      "type": "@n8n/n8n-nodes-langchain.lmChatOllama",
+      "typeVersion": 1,
+      "position": [680, 300],
+      "credentials": {
+        "ollamaApi": {
+          "id": "ollama-credential-id",
+          "name": "Local Ollama service"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "functionCode": "// Prepare projects data for AI analysis\nconst projects = $input.all()[0]?.json || [];\n\n// Format projects for AI analysis\nconst projectsText = projects.map(p => \n  `Project: ${p.title}\n` +\n  `Stage: ${p.stage}\n` +\n  `Score: ${p.score} (${p.color_code})\n` +\n  `Areas: ${p.affected_areas?.join(', ') || 'None'}\n` +\n  `Content: ${p.content?.substring(0, 200) || 'No description'}\n` +\n  `---\n`\n).join('\\n');\n\nreturn { projects_text: projectsText, projects_count: projects.length };"
+      },
+      "id": "prepare-projects-data",
+      "name": "Prepare Projects Data",
+      "type": "@n8n/n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [520, 300]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Parse AI response and create opportunity records\nconst aiResponse = $input.all()[0]?.json?.response || '[]';\nlet opportunities = [];\n\ntry {\n  opportunities = JSON.parse(aiResponse);\n} catch (e) {\n  console.error('Failed to parse AI response:', e);\n  opportunities = [];\n}\n\n// Validate and enrich opportunities\nconst validOpportunities = opportunities.filter(opp => \n  opp.type && opp.confidence && opp.description\n).map(opp => ({\n  ...opp,\n  confidence_score: Math.max(0, Math.min(1, opp.confidence)),\n  identified_at: new Date().toISOString(),\n  status: 'active'\n}));\n\nreturn validOpportunities;"
+      },
+      "id": "parse-opportunities",
+      "name": "Parse AI Opportunities",
+      "type": "@n8n/n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [840, 300]
+    },
+    {
+      "parameters": {
+        "operation": "INSERT INTO strategic_opportunities (item_id, opportunity_type, description, confidence_score, affected_areas, potential_impact, identified_at, status) VALUES ($1, $2, $3, $4, $5, $6, $7, 'active') ON CONFLICT DO NOTHING",
+        "queryParameters": "={{ [\n  $json.item_id,\n  $json.type,\n  $json.description,\n  $json.confidence_score,\n  $json.affected_areas,\n  $json.impact,\n  $json.identified_at\n] }}"
+      },
+      "id": "store-opportunities",
+      "name": "Store Opportunities",
+      "type": "@n8n/n8n-nodes-base.postgres",
+      "typeVersion": 1,
+      "position": [1000, 300],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-credential-id",
+          "name": "PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "functionCode": "// Check for incomplete projects that could be building blocks\n// This is a fallback analysis if AI fails\nconst projects = $input.all()[0]?.json || [];\nconst opportunities = [];\n\nprojects.forEach(project => {\n  // Building block detection\n  if (project.stage === 'projects' && \n      project.affected_areas && \n      project.affected_areas.length >= 2 &&\n      project.score >= 7) {\n    opportunities.push({\n      item_id: project.id,\n      type: 'building_block',\n      description: `High-impact project affecting ${project.affected_areas.length} areas could serve as foundation for other initiatives`,\n      confidence_score: 0.8,\n      affected_areas: project.affected_areas,\n      potential_impact: 'Could accelerate multiple related projects',\n      identified_at: new Date().toISOString(),\n      status: 'active'\n    });\n  }\n  \n  // Near completion detection\n  if (project.content && \n      (project.content.toLowerCase().includes('90%') || \n       project.content.toLowerCase().includes('almost done') ||\n       project.content.toLowerCase().includes('final steps'))) {\n    opportunities.push({\n      item_id: project.id,\n      type: 'near_completion',\n      description: 'Project appears close to completion and could unlock other initiatives',\n      confidence_score: 0.7,\n      affected_areas: project.affected_areas || [],\n      potential_impact: 'Completing this could unblock dependent work',\n      identified_at: new Date().toISOString(),\n      status: 'active'\n    });\n  }\n});\n\nreturn opportunities;"
+      },
+      "id": "fallback-analysis",
+      "name": "Fallback Rule-Based Analysis",
+      "type": "@n8n/n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [840, 480]
+    },
+    {
+      "parameters": {
+        "operation": "SELECT so.*, pi.title, pi.stage FROM strategic_opportunities so JOIN para_items pi ON so.item_id = pi.id WHERE so.status = 'active' AND so.identified_at > NOW() - INTERVAL '1 day'"
+      },
+      "id": "query-todays-opportunities",
+      "name": "Query Today's Opportunities",
+      "type": "@n8n/n8n-nodes-base.postgres",
+      "typeVersion": 1,
+      "position": [1220, 300],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-credential-id",
+          "name": "PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "functionCode": "// Prepare strategic opportunities summary for Slack\nconst opportunities = $input.all();\nconst summary = {\n  total_opportunities: opportunities.length,\n  by_type: {},\n  high_confidence: opportunities.filter(o => o.confidence_score >= 0.8).length,\n  opportunities_list: opportunities.map(o => \n    `• *${o.title}* (${o.opportunity_type}) - ${o.description.substring(0, 100)}...`\n  ).join('\\n')\n};\n\n// Count by type\nopportunities.forEach(o => {\n  summary.by_type[o.opportunity_type] = (summary.by_type[o.opportunity_type] || 0) + 1;\n});\n\nreturn summary;"
+      },
+      "id": "prepare-slack-summary",
+      "name": "Prepare Slack Summary",
+      "type": "@n8n/n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [1440, 300]
+    },
+    {
+      "parameters": {
+        "channel": "C1234567890",
+        "text": "🎯 *STRATEGIC OPPORTUNITIES REPORT* 🎯\n\n*{{ $json.total_opportunities }} strategic opportunities identified today*\n\n*Breakdown:*\n{{ Object.entries($json.by_type).map(([type, count]) => `• ${type}: ${count}`).join('\\n') }}\n\n*High Confidence (≥80%):* {{ $json.high_confidence }}\n\n*Opportunities:*\n{{ $json.opportunities_list }}\n\n_These opportunities could significantly impact your productivity and unlock new initiatives._",
+        "attachments": []
+      },
+      "id": "slack-opportunities-report",
+      "name": "Slack Opportunities Report",
+      "type": "@n8n/n8n-nodes-base.slack",
+      "typeVersion": 1,
+      "position": [1660, 300],
+      "credentials": {
+        "slackApi": {
+          "id": "slack-credential-id",
+          "name": "Slack API"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Daily Analysis": {
+      "main": [
+        [
+          {
+            "node": "Query Recent Projects",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Query Recent Projects": {
+      "main": [
+        [
+          {
+            "node": "Prepare Projects Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Projects Data": {
+      "main": [
+        [
+          {
+            "node": "AI Opportunity Analysis",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Fallback Rule-Based Analysis",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Opportunity Analysis": {
+      "main": [
+        [
+          {
+            "node": "Parse AI Opportunities",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse AI Opportunities": {
+      "main": [
+        [
+          {
+            "node": "Store Opportunities",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fallback Rule-Based Analysis": {
+      "main": [
+        [
+          {
+            "node": "Store Opportunities",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Store Opportunities": {
+      "main": [
+        [
+          {
+            "node": "Query Today's Opportunities",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Query Today's Opportunities": {
+      "main": [
+        [
+          {
+            "node": "Prepare Slack Summary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Slack Summary": {
+      "main": [
+        [
+          {
+            "node": "Slack Opportunities Report",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "meta": {
+    "templateCredsSetupCompleted": false
+  },
+  "pinData": {},
+  "versionId": "1"
+}
+

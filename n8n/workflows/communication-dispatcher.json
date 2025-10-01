@@ -1,0 +1,265 @@
+{
+  "name": "Communication Dispatcher",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 24
+            }
+          ],
+          "triggerAtHour": 9
+        }
+      },
+      "id": "daily-summary-trigger",
+      "name": "Daily Summary at 9 AM",
+      "type": "@n8n/n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1,
+      "position": [240, 300]
+    },
+    {
+      "parameters": {
+        "operation": "SELECT to_stage, COUNT(*) as count FROM funnel_movements WHERE moved_at >= CURRENT_DATE GROUP BY to_stage"
+      },
+      "id": "query-funnel-movements",
+      "name": "Query Funnel Movements",
+      "type": "@n8n/n8n-nodes-base.postgres",
+      "typeVersion": 1,
+      "position": [460, 180],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-credential-id",
+          "name": "PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "SELECT so.*, pi.title FROM strategic_opportunities so JOIN para_items pi ON so.item_id = pi.id WHERE so.identified_at >= CURRENT_DATE AND so.status = 'active'"
+      },
+      "id": "query-strategic-opportunities",
+      "name": "Query Strategic Opportunities",
+      "type": "@n8n/n8n-nodes-base.postgres",
+      "typeVersion": 1,
+      "position": [460, 300],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-credential-id",
+          "name": "PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "SELECT issue_type, COUNT(*) as count FROM coherence_issues WHERE fixed_at >= CURRENT_DATE GROUP BY issue_type"
+      },
+      "id": "query-coherence-fixes",
+      "name": "Query Coherence Fixes",
+      "type": "@n8n/n8n-nodes-base.postgres",
+      "typeVersion": 1,
+      "position": [460, 420],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-credential-id",
+          "name": "PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "SELECT ts.color_code, COUNT(*) as count FROM task_scores ts JOIN para_items pi ON ts.item_id = pi.id WHERE ts.created_at >= CURRENT_DATE AND pi.stage IN ('jots', 'tasks', 'projects') GROUP BY ts.color_code"
+      },
+      "id": "query-task-scores",
+      "name": "Query Task Scores",
+      "type": "@n8n/n8n-nodes-base.postgres",
+      "typeVersion": 1,
+      "position": [460, 540],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-credential-id",
+          "name": "PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "functionCode": "// Compile comprehensive daily productivity summary\nconst movements = $input.all()[0]?.json || [];\nconst opportunities = $input.all()[1]?.json || [];\nconst fixes = $input.all()[2]?.json || [];\nconst scores = $input.all()[3]?.json || [];\n\n// Calculate totals\nconst totalMovements = movements.reduce((sum, m) => sum + parseInt(m.count), 0);\nconst totalOpportunities = opportunities.length;\nconst totalFixes = fixes.reduce((sum, f) => sum + parseInt(f.count), 0);\nconst totalScored = scores.reduce((sum, s) => sum + parseInt(s.count), 0);\n\n// Format movement summary\nconst movementSummary = movements.map(m => \n  `${m.count} items moved to ${m.to_stage}`\n).join(', ');\n\n// Format opportunities by type\nconst opportunitiesByType = {};\nopportunities.forEach(o => {\n  opportunitiesByType[o.opportunity_type] = (opportunitiesByType[o.opportunity_type] || 0) + 1;\n});\nconst opportunitySummary = Object.entries(opportunitiesByType)\n  .map(([type, count]) => `${count} ${type.replace('_', ' ')}`)\n  .join(', ');\n\n// Format coherence fixes\nconst fixSummary = fixes.map(f => \n  `${f.count} ${f.issue_type.replace('_', ' ')} issues fixed`\n).join(', ');\n\n// Format task scores\nconst scoreSummary = scores.map(s => \n  `${s.count} ${s.color_code} priority items`\n).join(', ');\n\n// Identify items needing delegation (high priority opportunities)\nconst needsDelegation = opportunities\n  .filter(o => o.confidence_score >= 0.8)\n  .slice(0, 3) // Top 3\n  .map(o => `• ${o.title} (${o.opportunity_type})`)\n  .join('\\n');\n\nreturn {\n  total_movements: totalMovements,\n  total_opportunities: totalOpportunities,\n  total_fixes: totalFixes,\n  total_scored: totalScored,\n  movement_summary: movementSummary || 'No movements today',\n  opportunity_summary: opportunitySummary || 'No new opportunities',\n  fix_summary: fixSummary || 'No coherence issues fixed',\n  score_summary: scoreSummary || 'No items scored today',\n  needs_delegation: needsDelegation || 'None',\n  report_date: new Date().toLocaleDateString()\n};"
+      },
+      "id": "compile-summary",
+      "name": "Compile Daily Summary",
+      "type": "@n8n/n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [680, 300]
+    },
+    {
+      "parameters": {
+        "channel": "C1234567890",
+        "text": "📊 *DAILY PRODUCTIVITY REPORT* 📊 - {{ $json.report_date }}\n\n*🎯 PARA FUNNEL ACTIVITY*\n{{ $json.movement_summary }}\n\n*🔍 STRATEGIC OPPORTUNITIES*\n{{ $json.opportunity_summary }}\n\n*🛠️ DATABASE COHERENCE*\n{{ $json.fix_summary }}\n\n*📈 TASK SCORING*\n{{ $json.score_summary }}\n\n*👥 NEEDS DELEGATION* (High-confidence opportunities)\n{{ $json.needs_delegation }}\n\n*Stay productive and focused on what matters!* 🙏",
+        "attachments": []
+      },
+      "id": "slack-daily-summary",
+      "name": "Slack Daily Summary",
+      "type": "@n8n/n8n-nodes-base.slack",
+      "typeVersion": 1,
+      "position": [900, 300],
+      "credentials": {
+        "slackApi": {
+          "id": "slack-credential-id",
+          "name": "Slack API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "fromEmail": "para-agent@yourdomain.com",
+        "toEmail": "={{ $env.NOTIFICATION_EMAIL }}",
+        "subject": "PARA Productivity Report - {{ $json.report_date }}",
+        "text": "*DAILY PRODUCTIVITY REPORT* - {{ $json.report_date }}\n\nPARA FUNNEL ACTIVITY:\n{{ $json.movement_summary }}\n\nSTRATEGIC OPPORTUNITIES:\n{{ $json.opportunity_summary }}\n\nDATABASE COHERENCE:\n{{ $json.fix_summary }}\n\nTASK SCORING:\n{{ $json.score_summary }}\n\nNEEDS DELEGATION (High-confidence opportunities):\n{{ $json.needs_delegation }}\n\nStay productive and focused on what matters!",
+        "options": {}
+      },
+      "id": "email-summary",
+      "name": "Email Summary",
+      "type": "@n8n/n8n-nodes-base.emailSend",
+      "typeVersion": 1,
+      "position": [900, 480],
+      "credentials": {
+        "smtp": {
+          "id": "smtp-credential-id",
+          "name": "SMTP"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "functionCode": "// Log summary dispatch for monitoring\nconsole.log(`Daily summary dispatched: ${$input.all().length} items processed`);\n\nreturn {\n  dispatched_at: new Date().toISOString(),\n  channels: ['slack', 'email'],\n  status: 'completed'\n};"
+      },
+      "id": "log-dispatch",
+      "name": "Log Dispatch",
+      "type": "@n8n/n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [1120, 300]
+    }
+  ],
+  "connections": {
+    "Daily Summary at 9 AM": {
+      "main": [
+        [
+          {
+            "node": "Query Funnel Movements",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Query Strategic Opportunities",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Query Coherence Fixes",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Query Task Scores",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Query Funnel Movements": {
+      "main": [
+        [
+          {
+            "node": "Compile Daily Summary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Query Strategic Opportunities": {
+      "main": [
+        [
+          {
+            "node": "Compile Daily Summary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Query Coherence Fixes": {
+      "main": [
+        [
+          {
+            "node": "Compile Daily Summary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Query Task Scores": {
+      "main": [
+        [
+          {
+            "node": "Compile Daily Summary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Compile Daily Summary": {
+      "main": [
+        [
+          {
+            "node": "Slack Daily Summary",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Email Summary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Slack Daily Summary": {
+      "main": [
+        [
+          {
+            "node": "Log Dispatch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Email Summary": {
+      "main": [
+        [
+          {
+            "node": "Log Dispatch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "meta": {
+    "templateCredsSetupCompleted": false
+  },
+  "pinData": {},
+  "versionId": "1"
+}
+
