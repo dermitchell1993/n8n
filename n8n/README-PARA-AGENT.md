@@ -32,7 +32,7 @@ This PARA (Productivity, Areas, Resources, Archives) agent serves as your centra
    - Maintains audit trail of movements
 
 4. **Strategic Opportunity Scout** (`strategic-opportunity-scout.json`)
-   - Uses Ollama AI to identify building blocks and dependencies
+   - Uses OpenAI GPT-4o-mini to identify building blocks and dependencies
    - Detects high-impact projects and near-completion opportunities
    - Sends daily strategic reports
 
@@ -77,6 +77,9 @@ NOTION_ARCHIVES_DATABASE_ID=your_archives_db_id
 # Linear API
 LINEAR_TEAM_ID=your_linear_team_id
 
+# OpenAI API (for AI analysis)
+OPENAI_API_KEY=your_openai_api_key
+
 # Codegen Integration
 CODEGEN_API_BASE_URL=https://api.codegen.com
 CODEGEN_API_KEY=your_codegen_api_key
@@ -85,14 +88,28 @@ CODEGEN_API_KEY=your_codegen_api_key
 NOTIFICATION_EMAIL=your@email.com
 ```
 
-### 3. Start Services
+### 3. Start Local Services
 
 ```bash
-# For CPU-only systems
-docker compose --profile cpu up -d
+# PostgreSQL for data storage
+docker run -d --name postgres \
+  --platform linux/arm64 \
+  -e POSTGRES_USER=root \
+  -e POSTGRES_PASSWORD=your_password \
+  -e POSTGRES_DB=n8n \
+  -p 5432:5432 \
+  -v postgres_data:/var/lib/postgresql/data \
+  postgres:16-alpine
 
-# For GPU systems (Nvidia)
-docker compose --profile gpu-nvidia up -d
+# Weaviate for vector storage
+docker run -d --name weaviate \
+  --platform linux/arm64 \
+  -p 8080:8080 \
+  -e QUERY_DEFAULTS_LIMIT=25 \
+  -e AUTHENTICATION_ANONYMOUS_ACCESS_ENABLED=true \
+  -e PERSISTENCE_DATA_PATH='/var/lib/weaviate' \
+  -v weaviate_data:/var/lib/weaviate \
+  semitechnologies/weaviate:latest
 ```
 
 ### 4. Initialize Database
@@ -333,4 +350,3 @@ This creates your "nerve center" that prioritizes execution over planning, surfa
 
 Would you like me to help you set up the Notion databases, configure the Linear workspace, or walk through importing the workflows? 🤖</content>
 <parameter name="request_feedback">true
-
