@@ -63,6 +63,24 @@
     },
     {
       "parameters": {
+        "operation": "insert",
+        "className": "PARA_Projects",
+        "items": "={{ $input.all().map(item => ({ \n  content: item.content || item.title,\n  metadata: {\n    item_id: item.id,\n    title: item.title,\n    stage: item.stage,\n    score: item.score,\n    affected_areas: item.affected_areas,\n    urgency: item.urgency,\n    importance: item.importance\n  }\n})) }}"
+      },
+      "id": "store-in-weaviate",
+      "name": "Store in Weaviate",
+      "type": "@n8n/n8n-nodes-langchain.vectorStoreWeaviate",
+      "typeVersion": 1,
+      "position": [520, 480],
+      "credentials": {
+        "weaviateApi": {
+          "id": "weaviate-credential-id",
+          "name": "Weaviate API"
+        }
+      }
+    },
+    {
+      "parameters": {
         "functionCode": "// Prepare projects data for AI analysis\nconst projects = $input.all()[0]?.json || [];\n\n// Format projects for AI analysis\nconst projectsText = projects.map(p => \n  `Project: ${p.title}\n` +\n  `Stage: ${p.stage}\n` +\n  `Score: ${p.score} (${p.color_code})\n` +\n  `Areas: ${p.affected_areas?.join(', ') || 'None'}\n` +\n  `Content: ${p.content?.substring(0, 200) || 'No description'}\n` +\n  `---\n`\n).join('\\n');\n\nreturn { projects_text: projectsText, projects_count: projects.length };"
       },
       "id": "prepare-projects-data",
@@ -100,7 +118,43 @@
     },
     {
       "parameters": {
-        "functionCode": "// Check for incomplete projects that could be building blocks\n// This is a fallback analysis if AI fails\nconst projects = $input.all()[0]?.json || [];\nconst opportunities = [];\n\nprojects.forEach(project => {\n  // Building block detection\n  if (project.stage === 'projects' && \n      project.affected_areas && \n      project.affected_areas.length >= 2 &&\n      project.score >= 7) {\n    opportunities.push({\n      item_id: project.id,\n      type: 'building_block',\n      description: `High-impact project affecting ${project.affected_areas.length} areas could serve as foundation for other initiatives`,\n      confidence_score: 0.8,\n      affected_areas: project.affected_areas,\n      potential_impact: 'Could accelerate multiple related projects',\n      identified_at: new Date().toISOString(),\n      status: 'active'\n    });\n  }\n  \n  // Near completion detection\n  if (project.content && \n      (project.content.toLowerCase().includes('90%') || \n       project.content.toLowerCase().includes('almost done') ||\n       project.content.toLowerCase().includes('final steps'))) {\n    opportunities.push({\n      item_id: project.id,\n      type: 'near_completion',\n      description: 'Project appears close to completion and could unlock other initiatives',\n      confidence_score: 0.7,\n      affected_areas: project.affected_areas || [],\n      potential_impact: 'Completing this could unblock dependent work',\n      identified_at: new Date().toISOString(),\n      status: 'active'\n    });\n  }\n});\n\nreturn opportunities;"
+        "operation": "search",
+        "className": "PARA_Projects",
+        "query": "={{ $json.opportunity_description }}",
+        "limit": 5,
+        "filters": {
+          "where": {
+            "operator": "And",
+            "operands": [
+              {
+                "path": ["metadata", "stage"],
+                "operator": "Equal",
+                "valueString": "projects"
+              },
+              {
+                "path": ["metadata", "score"],
+                "operator": "GreaterThanEqual",
+                "valueNumber": 5
+              }
+            ]
+          }
+        }
+      },
+      "id": "weaviate-semantic-search",
+      "name": "Weaviate Semantic Search",
+      "type": "@n8n/n8n-nodes-langchain.vectorStoreWeaviate",
+      "typeVersion": 1,
+      "position": [1000, 120],
+      "credentials": {
+        "weaviateApi": {
+          "id": "weaviate-credential-id",
+          "name": "Weaviate API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "functionCode": "// Check for incomplete projects that could be building blocks\n// This is a fallback analysis if AI fails\nconst projects = $input.all()[0]?.json || [];\nconst opportunities = [];\n\nprojects.forEach(project => {\n  // Building block detection\n  if (project.stage === 'projects' && \n      project.affected_areas && \n      project.affected_areas.length >= 2 &&\n      project.score >= 7) {\n    opportunities.push({\n      item_id: project.id,\n      type: 'building_block',\n      description: `High-impact project affecting ${project.affected_areas.length} areas could serve as foundation for other initiatives`,\n      confidence_score: 0.8,\n      affected_areas: project.affected_areas,\n      potential_impact: 'Could accelerate multiple related projects',\n      identified_at: new Date().toISOString(),\n      status: 'active',\n      opportunity_description: `building block project ${project.title} affecting ${project.affected_areas.join(' and ')}`\n    });\n  }\n  \n  // Near completion detection\n  if (project.content && \n      (project.content.toLowerCase().includes('90%') || \n       project.content.toLowerCase().includes('almost done') ||\n       project.content.toLowerCase().includes('final steps'))) {\n    opportunities.push({\n      item_id: project.id,\n      type: 'near_completion',\n      description: 'Project appears close to completion and could unlock other initiatives',\n      confidence_score: 0.7,\n      affected_areas: project.affected_areas || [],\n      potential_impact: 'Completing this could unblock dependent work',\n      identified_at: new Date().toISOString(),\n      status: 'active',\n      opportunity_description: `near completion project ${project.title}`\n    });\n  }\n});\n\nreturn opportunities;"
       },
       "id": "fallback-analysis",
       "name": "Fallback Rule-Based Analysis",
@@ -172,6 +226,11 @@
             "node": "Prepare Projects Data",
             "type": "main",
             "index": 0
+          },
+          {
+            "node": "Store in Weaviate",
+            "type": "main",
+            "index": 0
           }
         ]
       ]
@@ -210,6 +269,11 @@
             "node": "Store Opportunities",
             "type": "main",
             "index": 0
+          },
+          {
+            "node": "Weaviate Semantic Search",
+            "type": "main",
+            "index": 0
           }
         ]
       ]
@@ -219,6 +283,28 @@
         [
           {
             "node": "Store Opportunities",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Weaviate Semantic Search": {
+      "main": [
+        [
+          {
+            "node": "Store Opportunities",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Store in Weaviate": {
+      "main": [
+        [
+          {
+            "node": "AI Opportunity Analysis",
             "type": "main",
             "index": 0
           }
@@ -269,4 +355,3 @@
   "pinData": {},
   "versionId": "1"
 }
-
