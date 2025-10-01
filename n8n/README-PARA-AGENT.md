@@ -32,7 +32,7 @@ This PARA (Productivity, Areas, Resources, Archives) agent serves as your centra
    - Maintains audit trail of movements
 
 4. **Strategic Opportunity Scout** (`strategic-opportunity-scout.json`)
-   - Uses OpenAI GPT-4o-mini to identify building blocks and dependencies
+   - Uses Anthropic Claude-3.5-Sonnet to identify building blocks and dependencies
    - Detects high-impact projects and near-completion opportunities
    - Sends daily strategic reports
 
@@ -77,8 +77,8 @@ NOTION_ARCHIVES_DATABASE_ID=your_archives_db_id
 # Linear API
 LINEAR_TEAM_ID=your_linear_team_id
 
-# OpenAI API (for AI analysis)
-OPENAI_API_KEY=your_openai_api_key
+# Anthropic API (for AI analysis)
+ANTHROPIC_API_KEY=your_anthropic_api_key
 
 # Codegen Integration
 CODEGEN_API_BASE_URL=https://api.codegen.com
