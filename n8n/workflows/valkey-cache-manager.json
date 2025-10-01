@@ -1,0 +1,220 @@
+{
+  "name": "Valkey Cache Manager",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 1
+            }
+          ]
+        }
+      },
+      "id": "cache-cleanup-scheduler",
+      "name": "Cache Cleanup Scheduler",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1,
+      "position": [240, 300]
+    },
+    {
+      "parameters": {
+        "operation": "set",
+        "key": "task_score:{{ $json.item_id }}",
+        "value": "{{ $json.task_score }}",
+        "ttl": 3600,
+        "options": {}
+      },
+      "id": "cache-task-score",
+      "name": "Cache Task Score",
+      "type": "n8n-nodes-base.redis",
+      "typeVersion": 1,
+      "position": [460, 100],
+      "credentials": {
+        "redis": {
+          "id": "valkey-credential-id",
+          "name": "Valkey Cache"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "set",
+        "key": "notion_page:{{ $json.page_id }}",
+        "value": "{{ JSON.stringify($json.page_data) }}",
+        "ttl": 1800,
+        "options": {}
+      },
+      "id": "cache-notion-data",
+      "name": "Cache Notion Data",
+      "type": "n8n-nodes-base.redis",
+      "typeVersion": 1,
+      "position": [460, 200],
+      "credentials": {
+        "redis": {
+          "id": "valkey-credential-id",
+          "name": "Valkey Cache"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "set",
+        "key": "linear_issue:{{ $json.issue_id }}",
+        "value": "{{ JSON.stringify($json.issue_data) }}",
+        "ttl": 1800,
+        "options": {}
+      },
+      "id": "cache-linear-data",
+      "name": "Cache Linear Data",
+      "type": "n8n-nodes-base.redis",
+      "typeVersion": 1,
+      "position": [460, 300],
+      "credentials": {
+        "redis": {
+          "id": "valkey-credential-id",
+          "name": "Valkey Cache"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "set",
+        "key": "vector_search:{{ $json.query_hash }}",
+        "value": "{{ JSON.stringify($json.search_results) }}",
+        "ttl": 900,
+        "options": {}
+      },
+      "id": "cache-vector-results",
+      "name": "Cache Vector Results",
+      "type": "n8n-nodes-base.redis",
+      "typeVersion": 1,
+      "position": [460, 400],
+      "credentials": {
+        "redis": {
+          "id": "valkey-credential-id",
+          "name": "Valkey Cache"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "keys",
+        "keyPattern": "task_score:*",
+        "options": {}
+      },
+      "id": "get-expired-keys",
+      "name": "Get Expired Keys",
+      "type": "n8n-nodes-base.redis",
+      "typeVersion": 1,
+      "position": [680, 300],
+      "credentials": {
+        "redis": {
+          "id": "valkey-credential-id",
+          "name": "Valkey Cache"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "del",
+        "key": "{{ $json.key }}",
+        "options": {}
+      },
+      "id": "cleanup-expired-cache",
+      "name": "Cleanup Expired Cache",
+      "type": "n8n-nodes-base.redis",
+      "typeVersion": 1,
+      "position": [900, 300],
+      "credentials": {
+        "redis": {
+          "id": "valkey-credential-id",
+          "name": "Valkey Cache"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "info",
+        "options": {}
+      },
+      "id": "cache-stats",
+      "name": "Cache Stats",
+      "type": "n8n-nodes-base.redis",
+      "typeVersion": 1,
+      "position": [1120, 300],
+      "credentials": {
+        "redis": {
+          "id": "valkey-credential-id",
+          "name": "Valkey Cache"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "content": "🗄️ **PARA Cache Status Report**\n\n**Cache Statistics:**\n{{ $json.stats }}\n\n**Cleanup completed at:** {{ new Date().toISOString() }}\n\n*Cache helps reduce API calls and improve PARA agent performance*",
+        "additionalFields": {}
+      },
+      "id": "cache-status-notification",
+      "name": "Cache Status Notification",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 1,
+      "position": [1340, 300],
+      "credentials": {
+        "slackApi": {
+          "id": "slack-credential-id",
+          "name": "Slack API"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "cache-cleanup-scheduler": {
+      "main": [
+        [
+          {
+            "node": "get-expired-keys",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "get-expired-keys": {
+      "main": [
+        [
+          {
+            "node": "cleanup-expired-cache",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "cleanup-expired-cache": {
+      "main": [
+        [
+          {
+            "node": "cache-stats",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "cache-stats": {
+      "main": [
+        [
+          {
+            "node": "cache-status-notification",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {},
+  "staticData": null
+}
